@@ -1,0 +1,153 @@
+
+from flask import Flask, render_template, Response, request, send_file, jsonify
+import cv2
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+import numpy as np
+import pandas as pd
+import glob 
+import json 
+from sentence_transformers import SentenceTransformer, util
+from query_processing import Translation
+from Search_processing import MyFaiss
+
+# http://0.0.0.0:5001/home?index=0
+
+# app = Flask(__name__, template_folder='templates', static_folder='static')
+
+app = Flask(__name__, template_folder='D:\\DatTruong\\All\\2025\\HCM_AI\\template', static_folder='D:\\DatTruong\\All\\2025\\HCM_AI\\Static2')
+
+####### CONFIG #########
+with open('D:\\DatTruong\\All\\2025\\HCM_AI\\Data\\Final_Json.json') as json_file:
+    json_dict = json.load(json_file)
+
+DictImagePath = {}
+for key, value in json_dict.items():
+   DictImagePath[int(key)] = value 
+
+LenDictPath = len(DictImagePath)
+root = "D:\\DatTruong\\All\\2025\\HCM_AI\\Data"
+bin_file='D:\\DatTruong\\All\\2025\\HCM_AI\\faiss_cosine_16.bin'
+json_path = 'D:\\DatTruong\\All\\2025\\HCM_AI\\Data\\Final_Json.json'
+features = np.load("D:\\DatTruong\\All\\2025\\HCM_AI\\Data\\concatenated_features.npy")
+model = SentenceTransformer('clip-ViT-B-32')
+Myfaiss = MyFaiss(root, bin_file, features, json_path, 'cpu', Translation, model)
+########################
+
+@app.route('/home')
+@app.route('/')
+def thumbnailimg():
+    #print("load_iddoc")
+
+    # pagefile = []
+    index = int(request.args.get('index'))
+    if index == None:
+        index = 0
+
+    imgperindex = 100
+    
+    #imgpath = request.args.get('imgpath') + "/"
+    pagefile = []
+
+    page_filelist = []
+    list_idx = []
+
+    if LenDictPath-1 > index+imgperindex:
+        first_index = index * imgperindex
+        last_index = index*imgperindex + imgperindex
+
+        tmp_index = first_index
+        while tmp_index < last_index:
+            page_filelist.append(DictImagePath[tmp_index][1])
+            list_idx.append(tmp_index)
+            tmp_index += 1    
+    else:
+        first_index = index * imgperindex
+        last_index = LenDictPath
+
+        tmp_index = first_index
+        while tmp_index < last_index:
+            page_filelist.append(DictImagePath[tmp_index][1])
+            list_idx.append(tmp_index)
+            tmp_index += 1    
+
+    for imgpath, id in zip(page_filelist, list_idx):
+        pagefile.append({'imgpath': imgpath, 'id': id})
+
+    data = {'num_page': int(LenDictPath/imgperindex)+1, 'pagefile': pagefile}
+    return render_template('home.html', data=data)
+
+@app.route('/imgsearch')
+def image_search():
+    print("image search")
+    pagefile = []
+    id_query = int(request.args.get('imgid'))
+    _, list_ids, list_image_paths = Myfaiss.image_search(id_query, k=100)
+
+    imgperindex = 100 
+
+    for imgpath, id in zip(list_image_paths, list_ids):
+        pagefile.append({'imgpath': imgpath, 'id': int(id)})
+
+    data = {'num_page': int(LenDictPath/imgperindex)+1, 'pagefile': pagefile}
+    
+    return render_template('home.html', data=data)
+
+@app.route('/textsearch')
+def text_search():
+    pagefile = []
+    text_query = request.args.get('textquery')
+    _, path_imgs, info_imgs = Myfaiss.text_search(text_query, k=200)
+
+    imgperindex = 100 
+
+
+    for imgpath, id in zip(path_imgs, info_imgs):
+        pagefile.append({'imgpath': imgpath, 'id': int(id)})
+
+    data = {'num_page': int(LenDictPath/imgperindex)+1, 'pagefile': pagefile}
+    
+    return render_template('home.html', data=data)
+
+@app.route('/showsegment')
+def show_segment():
+    pagefile = []
+    imgperindex = 100
+    id_path = str(request.args.get('pathh'))
+    image_paths, info = Myfaiss.show_segment(id_path)
+    for imgpath, id in zip(image_paths, info):
+        pagefile.append({'imgpath': imgpath, 'id': int(id)})
+    data = {'num_page': int(LenDictPath/imgperindex)+1, 'pagefile': pagefile}
+    
+    return render_template('home.html', data=data)
+
+@app.route('/get_img')
+def get_img():
+    # print("get_img")
+    root = 'D:\\DatTruong\\All\\2025\\HCM_AI\\Data'
+    fpath = request.args.get('fpath')
+    fpath = os.path.join(root, fpath)
+    list_image_name = fpath.split("/")
+    image_name = "/".join(list_image_name[-2:])
+    #print('fpath: ', fpath)
+    if os.path.exists(fpath):
+        img = cv2.imread(fpath)
+    else:  
+        # print("load 404.jph")
+        img = cv2.imread("D:\\DatTruong\\All\\2025\\HCM_AI\\static\\image\\404.jpg")
+
+    img = cv2.resize(img, (1280,720))
+
+    # print(img.shape)
+    img = cv2.putText(img, image_name, (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 
+                   3, (255, 0, 0), 4, cv2.LINE_AA)
+
+    ret, jpeg = cv2.imencode('.jpg', img)
+    return  Response((b'--frame\r\n'
+                     b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n\r\n'),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+
+if __name__ == '__main__':
+    app.run(debug=True, host="0.0.0.0", port=5001)
